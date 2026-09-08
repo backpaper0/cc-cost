@@ -1,10 +1,10 @@
 # cc-cost
 
-Claude Code のセッションログ(`$HOME/.claude/projects/`)を集計し、モデル単価と為替レートから利用コスト(USD/JPY)を算出して表示するCLIツール。
+Claude Code のセッションログ(`$HOME/.claude/projects/` など)を集計し、モデル単価と為替レートから利用コスト(USD/JPY)を算出して表示するCLIツール。
 
 ## 特徴
 
-- `$HOME/.claude/projects/` 配下のセッションログ(JSONL)をスキャンし、本日・今月・先月・先々月の4期間でコストを集計
+- ログルート(デフォルト: `$CLAUDE_CONFIG_DIR/projects`、未設定なら `$HOME/.claude/projects`。設定ファイルで追加のログルートも指定可能)配下のセッションログ(JSONL)をスキャンし、本日・今月・先月・先々月の4期間でコストを集計
 - サブエージェント呼び出しなどの「サイドチェーン」(`isSidechain: true`)呼び出しも実際に課金される呼び出しとして集計に含める
 - モデル単価・為替レートは設定ファイル(`config.toml`)で管理し、外部APIには問い合わせない
 - 正規表現によるプロジェクトのグルーピング表示に対応
@@ -46,11 +46,18 @@ cc-cost
 `~/.config/cc-cost/config.toml` に以下の内容を記述します。
 
 ```toml
+# デフォルトのログルート($CLAUDE_CONFIG_DIR/projects、未設定なら $HOME/.claude/projects)に
+# 加えてスキャンしたい追加のログルート(絶対パス)。トップレベルのキーなので、
+# 必ずどの [section] よりも前に書くこと。CLAUDE_CONFIG_DIR を切り替えて複数の
+# .claude を使い分けている場合などに使う。
+#
+# roots = ["/path/to/another/.claude/projects"]
+
 [exchange_rate]
 # USD -> JPY 換算レート
 usd_to_jpy = 150.0
 
-# $HOME/.claude/projects/ 配下のディレクトリ名にマッチする正規表現(Pythonのre.searchで判定)。
+# ログルート配下のディレクトリ名にマッチする正規表現(Pythonのre.searchで判定)。
 # 定義した順に評価し、最初にマッチしたグループに割り当てる。
 # name 側では \1 のようにキャプチャグループを参照できる。
 # どのパターンにもマッチしないプロジェクトは、ディレクトリ名を読みやすいパス形式
@@ -71,6 +78,8 @@ cache_read = 0.20
 ```
 
 単価・為替レートは動的取得せず、この設定ファイルの値をそのまま使用します。単価改定や為替変動があった場合は、ユーザー自身が値を書き換えてください。更新すると、先月・先々月など過去期間の表示金額も新しい値で再計算されます(詳細: [docs/adr/0003](docs/adr/0003-apply-current-rates-to-all-periods.md))。
+
+複数のログルートを指定した場合、存在しないルートは警告のみでスキップされ(全ルートが存在しない場合はエラー)、異なるログルートに同名のプロジェクトディレクトリがあっても合算せず別プロジェクトとして扱います(詳細: [docs/adr/0004](docs/adr/0004-multiple-log-roots.md))。
 
 ## 用語
 

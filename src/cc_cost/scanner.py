@@ -1,4 +1,4 @@
-"""セッションログ(`$HOME/.claude/projects/**/*.jsonl`)を走査し、
+"""セッションログ(`<ログルート>/**/*.jsonl`)を走査し、
 プロジェクト×期間×モデルごとのトークン使用量を集計する。
 
 集計アルゴリズムは issue #3(セッションログのusage集計ルールの調査)の結論に基づく:
@@ -9,10 +9,17 @@
 - dedupは必ず「同一ファイル内」に限定する(ファイルをまたいだrequestId一致を信用しない)。
 - サイドチェーン(`isSidechain: true`)は別ファイル(`subagents/agent-*.jsonl`)に分離されて
   いるため、ファイルごとの結果を単純合算するだけで二重計上・欠落なく扱える。
+
+複数ログルート対応(docs/adr/0004-multiple-log-roots.md)により、走査対象のログルートは
+複数ありうる。ルートをまたいで同名のプロジェクトディレクトリが存在しても、常に別プロジェクト
+として扱い、usageを合算することはしない(単に同じ名前を名乗る別の作業ディレクトリの可能性が
+あるため)。表示上の衝突を避けるため、その場合のみ `ProjectKey.collision_suffix` にルートの
+識別情報を付与する。
 """
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import json
 from pathlib import Path
@@ -20,8 +27,22 @@ from pathlib import Path
 from .periods import PeriodRanges
 from .usage import Usage, add_usage, usage_from_api_usage, zero_usage
 
-# project_dir_name -> period_key -> model -> Usage
-UsageByProjectPeriodModel = dict[str, dict[str, dict[str, Usage]]]
+
+@dataclasses.dataclass(frozen=True)
+class ProjectKey:
+    """プロジェクトを一意に識別するキー。
+
+    `dir_name` はプロジェクトグループの正規表現マッチに使う元のディレクトリ名。
+    `collision_suffix` は、同名のディレクトリが複数のログルートに存在する場合のみ
+    設定される表示用のルート識別情報(例: `[/path/to/root]`)。
+    """
+
+    dir_name: str
+    collision_suffix: str | None = None
+
+
+# ProjectKey -> period_key -> model -> Usage
+UsageByProjectPeriodModel = dict[ProjectKey, dict[str, dict[str, Usage]]]
 
 
 def _parse_timestamp(value: object) -> dt.datetime | None:
@@ -83,11 +104,11 @@ def _scan_jsonl_file(path: Path, warnings: list[str]) -> list[tuple[str, dt.date
     return list(last_by_key.values())
 
 
-def scan_all(projects_root: Path, period_ranges: PeriodRanges) -> tuple[UsageByProjectPeriodModel, list[str]]:
-    warnings: list[str] = []
-    result: UsageByProjectPeriodModel = {}
+def _scan_root(root: Path, period_ranges: PeriodRanges, warnings: list[str]) -> dict[str, dict[str, dict[str, Usage]]]:
+    """1つのログルートを走査し、dir_name -> period_key -> model -> Usage を返す。"""
+    by_dir_name: dict[str, dict[str, dict[str, Usage]]] = {}
 
-    for project_dir in sorted(p for p in projects_root.iterdir() if p.is_dir()):
+    for project_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         project_totals: dict[str, dict[str, Usage]] = {}
 
         for jsonl_path in sorted(project_dir.rglob("*.jsonl")):
@@ -97,6 +118,25 @@ def scan_all(projects_root: Path, period_ranges: PeriodRanges) -> tuple[UsageByP
                     period_bucket[model] = add_usage(period_bucket.get(model, zero_usage()), usage)
 
         if project_totals:
-            result[project_dir.name] = project_totals
+            by_dir_name[project_dir.name] = project_totals
+
+    return by_dir_name
+
+
+def scan_all(roots: list[Path], period_ranges: PeriodRanges) -> tuple[UsageByProjectPeriodModel, list[str]]:
+    """複数のログルートを走査する。各ルートは呼び出し側で存在確認済みであること。"""
+    warnings: list[str] = []
+    per_root = [(root, _scan_root(root, period_ranges, warnings)) for root in roots]
+
+    dir_name_counts: dict[str, int] = {}
+    for _root, by_dir_name in per_root:
+        for dir_name in by_dir_name:
+            dir_name_counts[dir_name] = dir_name_counts.get(dir_name, 0) + 1
+
+    result: UsageByProjectPeriodModel = {}
+    for root, by_dir_name in per_root:
+        for dir_name, project_totals in by_dir_name.items():
+            collision_suffix = f"[{root}]" if dir_name_counts[dir_name] > 1 else None
+            result[ProjectKey(dir_name=dir_name, collision_suffix=collision_suffix)] = project_totals
 
     return result, warnings

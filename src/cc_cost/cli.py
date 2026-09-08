@@ -15,8 +15,6 @@ from .periods import PeriodRanges
 from .render import render
 from .scanner import scan_all
 
-PROJECTS_ROOT = Path.home() / ".claude" / "projects"
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -63,14 +61,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"設定ファイルの読み込みに失敗しました: {args.config} ({e})", file=sys.stderr)
         return 1
 
-    if not PROJECTS_ROOT.is_dir():
-        print(f"ログディレクトリが見つかりません: {PROJECTS_ROOT}", file=sys.stderr)
+    existing_roots = [root for root in config.roots if root.is_dir()]
+    for root in config.roots:
+        if root not in existing_roots:
+            print(f"警告: ログルートが見つかりません: {root}", file=sys.stderr)
+    if not existing_roots:
+        print(f"ログディレクトリが見つかりません: {', '.join(str(r) for r in config.roots)}", file=sys.stderr)
         return 1
 
     now = dt.datetime.now().astimezone()
     period_ranges = PeriodRanges.for_now(now)
 
-    usage_by_project, warnings = scan_all(PROJECTS_ROOT, period_ranges)
+    usage_by_project, warnings = scan_all(existing_roots, period_ranges)
     for warning in warnings:
         print(f"警告: {warning}", file=sys.stderr)
 
