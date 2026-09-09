@@ -12,17 +12,34 @@ Claude Code のセッションログ(`$HOME/.claude/projects/` など)を集計�
 
 ## インストール
 
+[uv](https://docs.astral.sh/uv/) を使って GitHub リポジトリから直接インストールできます。
+
 ```bash
+uv tool install git+https://github.com/backpaper0/cc-cost.git
+```
+
+リポジトリをクローンしてインストールする場合:
+
+```bash
+git clone https://github.com/backpaper0/cc-cost.git
+cd cc-cost
 uv tool install .
 ```
 
-もしくは開発用に editable install する場合:
+開発用に editable install する場合:
 
 ```bash
+git clone https://github.com/backpaper0/cc-cost.git
+cd cc-cost
 uv sync
 ```
 
-`pyproject.toml` の `[project.scripts]` により `cc-cost` コマンドが利用可能になります。
+`uv tool install` の場合は `cc-cost` コマンドがそのまま利用可能になります(`pyproject.toml` の `[project.scripts]` による)。`uv sync` による editable install の場合は `uv run cc-cost` で実行してください。
+
+### 必要環境
+
+- Python >= 3.11
+- 依存パッケージなし(標準ライブラリのみで動作)
 
 ## 使い方
 
@@ -90,3 +107,7 @@ cache_read = 0.20
 - Python >= 3.11 / 依存パッケージなし
 - ビルドバックエンド: hatchling
 - 詳細な設計判断は [docs/adr/](docs/adr/) の各ADRを参照
+
+## ライセンス
+
+MIT License. 詳細は [LICENSE](LICENSE) を参照してください。
