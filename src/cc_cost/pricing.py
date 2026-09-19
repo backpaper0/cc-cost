@@ -44,6 +44,13 @@ def compute_period_cost(models: dict[str, Usage], config: Config) -> PeriodCost:
     return PeriodCost(usd=total_usd, jpy=to_jpy(total_usd, config), has_unknown_model=has_unknown)
 
 
+def web_search_cost_usd(request_count: int, config: Config) -> float | None:
+    """Web検索リクエスト数から追加コスト(USD)を算出する。単価未設定なら不明として None を返す。"""
+    if config.web_search_price_per_1k_requests is None:
+        return None
+    return request_count / 1_000.0 * config.web_search_price_per_1k_requests
+
+
 def unknown_models_in(models: dict[str, Usage], config: Config) -> list[str]:
     return sorted(
         model

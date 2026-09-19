@@ -44,6 +44,13 @@ DEFAULT_CONFIG_TOML = """\
 # USD -> JPY 換算レート
 usd_to_jpy = 150.0
 
+# Web検索(web_search)ツールの従量課金単価(モデル非依存、トークン費用とは別建て)。
+# セッションログのusageトークンには載らないため、単価テーブルに登録しないと
+# 「不明」として扱われる(不明モデルと同じ考え方)。
+# 出典: https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool (確認日: 2026-09-20)
+[server_tools.web_search]
+price_per_1k_requests = 10.0
+
 # ログルート配下のディレクトリ名にマッチする正規表現(Pythonのre.searchで判定)。
 # 定義した順に評価し、最初にマッチしたグループに割り当てる。
 # name 側では \\1 のようにキャプチャグループを参照できる。
@@ -109,6 +116,8 @@ class Config:
     project_groups: list[ProjectGroup]
     models: dict[str, ModelPricing]
     roots: list[Path]
+    # None は [server_tools.web_search] 未設定を表す(不明モデルと同じ「金額算出不能」の考え方)。
+    web_search_price_per_1k_requests: float | None
 
 
 def ensure_config_file(path: Path) -> bool:
@@ -152,4 +161,13 @@ def load_config(path: Path) -> Config:
             seen_roots.add(root)
             roots.append(root)
 
-    return Config(usd_to_jpy=usd_to_jpy, project_groups=project_groups, models=models, roots=roots)
+    web_search_price = data.get("server_tools", {}).get("web_search", {}).get("price_per_1k_requests")
+    web_search_price_per_1k_requests = float(web_search_price) if web_search_price is not None else None
+
+    return Config(
+        usd_to_jpy=usd_to_jpy,
+        project_groups=project_groups,
+        models=models,
+        roots=roots,
+        web_search_price_per_1k_requests=web_search_price_per_1k_requests,
+    )

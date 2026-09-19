@@ -25,7 +25,7 @@ import json
 from pathlib import Path
 
 from .periods import PeriodRanges
-from .usage import Usage, add_usage, usage_from_api_usage, zero_usage
+from .usage import Usage, add_usage, usage_from_api_usage, web_search_requests_from_api_usage, zero_usage
 
 
 @dataclasses.dataclass(frozen=True)
@@ -44,6 +44,11 @@ class ProjectKey:
 # ProjectKey -> period_key -> model -> Usage
 UsageByProjectPeriodModel = dict[ProjectKey, dict[str, dict[str, Usage]]]
 
+# ProjectKey -> period_key -> Web検索リクエスト数(累計)。
+# web_search課金はモデル非依存の単価なので、Usageのトークン種別とは別の並行したカウンタとして
+# プロジェクト・期間単位でのみ合算する(モデル別には持たない)。
+WebSearchByProjectPeriod = dict[ProjectKey, dict[str, int]]
+
 
 def _parse_timestamp(value: object) -> dt.datetime | None:
     if not isinstance(value, str):
@@ -54,9 +59,9 @@ def _parse_timestamp(value: object) -> dt.datetime | None:
         return None
 
 
-def _scan_jsonl_file(path: Path, warnings: list[str]) -> list[tuple[str, dt.datetime, Usage]]:
-    """1ファイルをdedupし、(model, ローカル日時, Usage) のリストを返す。"""
-    last_by_key: dict[str, tuple[str, dt.datetime, Usage]] = {}
+def _scan_jsonl_file(path: Path, warnings: list[str]) -> list[tuple[str, dt.datetime, Usage, int]]:
+    """1ファイルをdedupし、(model, ローカル日時, Usage, web_search_requests) のリストを返す。"""
+    last_by_key: dict[str, tuple[str, dt.datetime, Usage, int]] = {}
 
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -96,47 +101,61 @@ def _scan_jsonl_file(path: Path, warnings: list[str]) -> list[tuple[str, dt.date
 
         model = message.get("model") or "unknown"
         usage = usage_from_api_usage(api_usage)
+        web_search_requests = web_search_requests_from_api_usage(api_usage)
 
         # 同一キーが複数回現れた場合は、後から出現した行で上書きする
         # (ファイル内で最後の行が常に最終確定usageを持つことを実データで確認済み)。
-        last_by_key[key] = (model, timestamp.astimezone(), usage)
+        last_by_key[key] = (model, timestamp.astimezone(), usage, web_search_requests)
 
     return list(last_by_key.values())
 
 
-def _scan_root(root: Path, period_ranges: PeriodRanges, warnings: list[str]) -> dict[str, dict[str, dict[str, Usage]]]:
-    """1つのログルートを走査し、dir_name -> period_key -> model -> Usage を返す。"""
+def _scan_root(
+    root: Path, period_ranges: PeriodRanges, warnings: list[str]
+) -> tuple[dict[str, dict[str, dict[str, Usage]]], dict[str, dict[str, int]]]:
+    """1つのログルートを走査し、
+    (dir_name -> period_key -> model -> Usage, dir_name -> period_key -> web_search_requests) を返す。
+    """
     by_dir_name: dict[str, dict[str, dict[str, Usage]]] = {}
+    web_search_by_dir_name: dict[str, dict[str, int]] = {}
 
     for project_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         project_totals: dict[str, dict[str, Usage]] = {}
+        web_search_totals: dict[str, int] = {}
 
         for jsonl_path in sorted(project_dir.rglob("*.jsonl")):
-            for model, local_ts, usage in _scan_jsonl_file(jsonl_path, warnings):
+            for model, local_ts, usage, web_search_requests in _scan_jsonl_file(jsonl_path, warnings):
                 for period_key in period_ranges.periods_for(local_ts.date()):
                     period_bucket = project_totals.setdefault(period_key, {})
                     period_bucket[model] = add_usage(period_bucket.get(model, zero_usage()), usage)
+                    web_search_totals[period_key] = web_search_totals.get(period_key, 0) + web_search_requests
 
         if project_totals:
             by_dir_name[project_dir.name] = project_totals
+            web_search_by_dir_name[project_dir.name] = web_search_totals
 
-    return by_dir_name
+    return by_dir_name, web_search_by_dir_name
 
 
-def scan_all(roots: list[Path], period_ranges: PeriodRanges) -> tuple[UsageByProjectPeriodModel, list[str]]:
+def scan_all(
+    roots: list[Path], period_ranges: PeriodRanges
+) -> tuple[UsageByProjectPeriodModel, WebSearchByProjectPeriod, list[str]]:
     """複数のログルートを走査する。各ルートは呼び出し側で存在確認済みであること。"""
     warnings: list[str] = []
-    per_root = [(root, _scan_root(root, period_ranges, warnings)) for root in roots]
+    per_root = [(root, *_scan_root(root, period_ranges, warnings)) for root in roots]
 
     dir_name_counts: dict[str, int] = {}
-    for _root, by_dir_name in per_root:
+    for _root, by_dir_name, _web_search_by_dir_name in per_root:
         for dir_name in by_dir_name:
             dir_name_counts[dir_name] = dir_name_counts.get(dir_name, 0) + 1
 
-    result: UsageByProjectPeriodModel = {}
-    for root, by_dir_name in per_root:
+    usage_result: UsageByProjectPeriodModel = {}
+    web_search_result: WebSearchByProjectPeriod = {}
+    for root, by_dir_name, web_search_by_dir_name in per_root:
         for dir_name, project_totals in by_dir_name.items():
             collision_suffix = f"[{root}]" if dir_name_counts[dir_name] > 1 else None
-            result[ProjectKey(dir_name=dir_name, collision_suffix=collision_suffix)] = project_totals
+            project_key = ProjectKey(dir_name=dir_name, collision_suffix=collision_suffix)
+            usage_result[project_key] = project_totals
+            web_search_result[project_key] = web_search_by_dir_name[dir_name]
 
-    return result, warnings
+    return usage_result, web_search_result, warnings

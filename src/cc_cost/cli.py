@@ -72,11 +72,11 @@ def main(argv: list[str] | None = None) -> int:
     now = dt.datetime.now().astimezone()
     period_ranges = PeriodRanges.for_now(now)
 
-    usage_by_project, warnings = scan_all(existing_roots, period_ranges)
+    usage_by_project, web_search_by_project, warnings = scan_all(existing_roots, period_ranges)
     for warning in warnings:
         print(f"警告: {warning}", file=sys.stderr)
 
-    grouped = group_projects(usage_by_project, config)
+    grouped = group_projects(usage_by_project, web_search_by_project, config)
     render(grouped, config, verbose=args.verbose, use_color=use_color)
     return 0
 

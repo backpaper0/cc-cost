@@ -36,3 +36,16 @@ def usage_from_api_usage(api_usage: dict) -> Usage:
         "cache_write_1h": cache_write_1h,
         "cache_read": api_usage.get("cache_read_input_tokens", 0) or 0,
     }
+
+
+def web_search_requests_from_api_usage(api_usage: dict) -> int:
+    """`message.usage.server_tool_use.web_search_requests` を取り出す。
+
+    web_search はトークン課金とは別建てで従量課金($10/1,000リクエスト)されるが、
+    usageオブジェクトにはトークンと同じ粒度でリクエスト回数が乗っているだけなので、
+    5種類のトークンとは別の並行したカウンタとして扱う。
+    """
+    server_tool_use = api_usage.get("server_tool_use")
+    if not isinstance(server_tool_use, dict):
+        return 0
+    return server_tool_use.get("web_search_requests", 0) or 0

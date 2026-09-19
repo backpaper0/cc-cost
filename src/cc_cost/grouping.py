@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from .config import Config
-from .scanner import ProjectKey, UsageByProjectPeriodModel
+from .scanner import ProjectKey, UsageByProjectPeriodModel, WebSearchByProjectPeriod
 from .usage import Usage, add_usage
 
 
@@ -32,10 +32,13 @@ def resolve_group_name(project_key: ProjectKey, config: Config) -> tuple[int | N
 
 
 def group_projects(
-    usage_by_project: UsageByProjectPeriodModel, config: Config
-) -> list[tuple[str, dict[str, dict[str, Usage]]]]:
-    """project_dir単位のusageを、グループ名でマージした上で表示順に並べる。"""
+    usage_by_project: UsageByProjectPeriodModel,
+    web_search_by_project: WebSearchByProjectPeriod,
+    config: Config,
+) -> list[tuple[str, dict[str, dict[str, Usage]], dict[str, int]]]:
+    """project_dir単位のusage・Web検索リクエスト数を、グループ名でマージした上で表示順に並べる。"""
     merged: dict[str, dict[str, dict[str, Usage]]] = {}
+    merged_web_search: dict[str, dict[str, int]] = {}
     order_key: dict[str, tuple[int, str]] = {}
     num_patterns = len(config.project_groups)
 
@@ -50,5 +53,9 @@ def group_projects(
             for model, usage in models.items():
                 period_bucket[model] = add_usage(period_bucket.get(model, {}), usage)
 
+        web_search_bucket = merged_web_search.setdefault(group_name, {})
+        for period_key, count in web_search_by_project.get(project_key, {}).items():
+            web_search_bucket[period_key] = web_search_bucket.get(period_key, 0) + count
+
     ordered_names = sorted(merged.keys(), key=lambda name: order_key[name])
-    return [(name, merged[name]) for name in ordered_names]
+    return [(name, merged[name], merged_web_search.get(name, {})) for name in ordered_names]
