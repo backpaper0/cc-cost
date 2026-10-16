@@ -9,6 +9,11 @@ from .scanner import ProjectKey, UsageByProjectPeriodModel
 from .usage import Usage, add_usage
 
 
+def readable_dir_name(dir_name: str) -> str:
+    """プロジェクトのディレクトリ名を、読みやすいパス形式(先頭の "-" を "/" に変換したもの)にする。"""
+    return dir_name.replace("-", "/") if dir_name.startswith("-") else dir_name
+
+
 def resolve_group_name(project_key: ProjectKey, config: Config) -> tuple[int | None, str]:
     """(マッチしたパターンのインデックス, グループ名) を返す。マッチしなければ (None, フォールバック名)。
 
@@ -25,7 +30,7 @@ def resolve_group_name(project_key: ProjectKey, config: Config) -> tuple[int | N
                 name = name.replace(f"\\{i}", value or "")
             return index, name
 
-    fallback = project_key.dir_name.replace("-", "/") if project_key.dir_name.startswith("-") else project_key.dir_name
+    fallback = readable_dir_name(project_key.dir_name)
     if project_key.collision_suffix:
         fallback = f"{fallback} {project_key.collision_suffix}"
     return None, fallback

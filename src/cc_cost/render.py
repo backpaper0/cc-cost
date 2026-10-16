@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import datetime as dt
+from collections.abc import Iterable
+
 from .config import Config
 from .periods import PERIOD_KEYS, PERIOD_LABELS
 from .pricing import PeriodCost, compute_period_cost, unknown_models_in
-from .scanner import UsageByProjectPeriodModel
+from .scanner import SessionUsage
 from .usage import Usage
 
 RESET = "\033[0m"
@@ -25,6 +28,32 @@ def _fmt_money(cost: PeriodCost) -> str:
 
 def _fmt_tokens(n: int) -> str:
     return f"{n:,}"
+
+
+def _fmt_datetime(value: dt.datetime | None) -> str:
+    return value.strftime("%Y-%m-%d %H:%M") if value is not None else "-"
+
+
+def _print_model_breakdown(models: dict[str, Usage], config: Config) -> None:
+    for model in sorted(models):
+        usage = models[model]
+        if not any(usage.values()):
+            continue
+        pricing = config.models.get(model)
+        amount = _fmt_money(compute_period_cost({model: usage}, config)) if pricing is not None else "不明"
+        print(
+            f"        {model:<28} "
+            f"in={_fmt_tokens(usage.get('input', 0)):>10} "
+            f"out={_fmt_tokens(usage.get('output', 0)):>9} "
+            f"cache5m={_fmt_tokens(usage.get('cache_write_5m', 0)):>9} "
+            f"cache1h={_fmt_tokens(usage.get('cache_write_1h', 0)):>9} "
+            f"cacheRead={_fmt_tokens(usage.get('cache_read', 0)):>10}  {amount}"
+        )
+
+
+def _print_unknown_model_warnings(unknown_models: Iterable[str], use_color: bool) -> None:
+    for model in sorted(unknown_models):
+        print(f"    {_c(YELLOW, f'⚠ {model} は単価テーブルに未登録です(金額は不明として扱われます)', use_color)}")
 
 
 def render(
@@ -54,27 +83,37 @@ def render(
                 line += " " + _c(YELLOW, "(一部不明を含む)", use_color)
             print(line)
 
-            if verbose and models:
-                for model in sorted(models):
-                    usage = models[model]
-                    if not any(usage.values()):
-                        continue
-                    pricing = config.models.get(model)
-                    amount = (
-                        _fmt_money(compute_period_cost({model: usage}, config))
-                        if pricing is not None
-                        else "不明"
-                    )
-                    print(
-                        f"        {model:<28} "
-                        f"in={_fmt_tokens(usage.get('input', 0)):>10} "
-                        f"out={_fmt_tokens(usage.get('output', 0)):>9} "
-                        f"cache5m={_fmt_tokens(usage.get('cache_write_5m', 0)):>9} "
-                        f"cache1h={_fmt_tokens(usage.get('cache_write_1h', 0)):>9} "
-                        f"cacheRead={_fmt_tokens(usage.get('cache_read', 0)):>10}  {amount}"
-                    )
+            if verbose:
+                _print_model_breakdown(models, config)
 
-        for model in sorted(all_unknown_models):
-            print(f"    {_c(YELLOW, f'⚠ {model} は単価テーブルに未登録です(金額は不明として扱われます)', use_color)}")
+        _print_unknown_model_warnings(all_unknown_models, use_color)
 
         print()
+
+
+def render_session(
+    group_name: str,
+    session_id: str,
+    session_usage: SessionUsage,
+    config: Config,
+    verbose: bool,
+    use_color: bool,
+) -> None:
+    """1つのセッション(サイドチェーン込み)の合計コストを、期間で分けずに表示する。"""
+    models = session_usage.models
+    cost = compute_period_cost(models, config)
+    unknown_models = unknown_models_in(models, config)
+
+    print(_c(BOLD + CYAN, f"■ {group_name}", use_color))
+    print(f"    セッション: {session_id}")
+    print(f"    期間      : {_fmt_datetime(session_usage.first_at)} 〜 {_fmt_datetime(session_usage.last_at)}")
+    line = f"    合計      : {_fmt_money(cost)}"
+    if unknown_models:
+        line += " " + _c(YELLOW, "(一部不明を含む)", use_color)
+    print(line)
+
+    if verbose:
+        _print_model_breakdown(models, config)
+
+    _print_unknown_model_warnings(unknown_models, use_color)
+    print()
