@@ -9,7 +9,7 @@ Claude Code のセッションログを集計し、モデル単価と為替レ�
 _Avoid_: ルートディレクトリ、projectsディレクトリ
 
 **セッション (Session)**:
-`<ログルート>/<project-dir>/<session-uuid>.jsonl` の1ファイルに対応する、1回のClaude Codeでのやり取りのまとまり。
+1回のClaude Codeでのやり取りのまとまり。メインの会話を記録した `<ログルート>/<project-dir>/<session-uuid>.jsonl` と、そのセッション中に発生したサイドチェーンを記録した `<ログルート>/<project-dir>/<session-uuid>/subagents/agent-*.jsonl` の集合で構成される。`<session-uuid>` をセッションIDと呼ぶ。セッション単位のコストにはサイドチェーンのコストも含む。
 _Avoid_: ログファイル、会話
 
 **ログエントリ (Log entry)**:
@@ -17,7 +17,7 @@ _Avoid_: ログファイル、会話
 _Avoid_: 行、レコード
 
 **API呼び出し (API call)**:
-Anthropic APIへの1回のリクエスト・レスポンス。課金の単位はこれであり、ログエントリではない。同一のAPI呼び出しに属するログエントリは `requestId`(またはassistantメッセージの`message.id`)で識別できる。
+Anthropic APIへの1回のリクエスト・レスポンス。課金の単位はこれであり、ログエントリではない。同一のAPI呼び出しに属するログエントリは `requestId`(またはassistantメッセージの`message.id`)で識別できる。同一API呼び出しかどうかの判定はセッション内(メインの会話とサイドチェーンのログをまたいで)で行い、セッションをまたいだ一致は信用しない。
 _Avoid_: リクエスト、呼び出し
 
 **使用量 (Usage)**:
