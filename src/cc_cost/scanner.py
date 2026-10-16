@@ -5,13 +5,13 @@
 - usage を持ちうるのは `type == "assistant"` の行のみ。
 - 同一の `requestId`(無ければ `message.id`、それも無ければ行の `uuid`)を持つ複数行は、
   同一API呼び出しの重複(完全複製、または出力トークンのみ増加する途中スナップショット)
-  であり、最後に出現した行のusageだけを1回計上する。
+  であり、最後に出現したログエントリのusageだけを1回計上する。
 - 重複排除は「セッション内」で行う。セッションは、メインログ `<session-uuid>.jsonl` と、
   同名ディレクトリ配下のログ(サイドチェーンを記録した `<session-uuid>/subagents/agent-*.jsonl`)
   の集合である。セッションをまたいだキーの一致は信用しない(別々に計上する)。
 - 複数ファイルにまたがる場合の「最後」は、同名ディレクトリ配下のログをパス順に読み、
-  メインログを最後に読む順序で決める。実データでは、サブエージェントを起動したAPI呼び出しが
-  サブエージェントのログの先頭にも複製されることがあり、その複製は出力トークンが途中値の
+  メインログを最後に読む順序で決める。実データでは、サイドチェーンを開始したAPI呼び出しが
+  サイドチェーンのログの先頭にも複製されることがあり、その複製は出力トークンが途中値の
   スナップショットだった(メインログ側が確定値)。メインログを最後に読むことで確定値が採用される。
 - サイドチェーン(`isSidechain: true`)も課金対象として集計に含める(docs/adr/0002)。
 
@@ -53,7 +53,7 @@ UsageByProjectPeriodModel = dict[ProjectKey, dict[str, dict[str, Usage]]]
 
 @dataclasses.dataclass(frozen=True)
 class SessionLog:
-    """1つのセッションを構成するログファイルの集合。
+    """1つのセッションを構成するセッションログ(JSONL)の集合。
 
     `paths` は重複排除で読む順序に並んでいる(同名ディレクトリ配下のログをパス順、メインログを最後)。
     """
@@ -128,8 +128,9 @@ def _scan_jsonl_file(
         model = message.get("model") or "unknown"
         usage = usage_from_api_usage(api_usage)
 
-        # 同一キーが複数回現れた場合は、後から出現した行で上書きする
-        # (ファイル内で最後の行が常に最終確定usageを持つことを実データで確認済み)。
+        # 同一キーが複数回現れた場合は、後から出現したログエントリで上書きする
+        # (ファイル内では最後のログエントリが常に最終確定usageを持つことを実データで確認済み。
+        # ファイルをまたぐ場合の順序はモジュールdocstringを参照)。
         last_by_key[key] = (model, timestamp.astimezone(), usage)
 
 
@@ -157,19 +158,23 @@ def scan_session(session: SessionLog, warnings: list[str]) -> SessionUsage:
 
 def _sessions_in_project(root: Path, project_dir: Path) -> list[SessionLog]:
     """プロジェクトディレクトリ内のセッションを、セッションIDの順に返す。"""
-    paths_by_id: dict[str, list[Path]] = {}
-    for entry in sorted(project_dir.iterdir()):
+    main_by_id: dict[str, Path] = {}
+    nested_by_id: dict[str, list[Path]] = {}
+    for entry in project_dir.iterdir():
         if entry.is_file() and entry.suffix == ".jsonl":
-            paths_by_id.setdefault(entry.stem, []).append(entry)
+            main_by_id[entry.stem] = entry
         elif entry.is_dir():
             nested = sorted(entry.rglob("*.jsonl"))
             if nested:
-                paths_by_id.setdefault(entry.name, [])[:0] = nested
+                nested_by_id[entry.name] = nested
 
-    return [
-        SessionLog(root=root, dir_name=project_dir.name, session_id=session_id, paths=tuple(paths))
-        for session_id, paths in sorted(paths_by_id.items())
-    ]
+    sessions = []
+    for session_id in sorted(main_by_id.keys() | nested_by_id.keys()):
+        # 重複排除で後勝ちにするため、メインログを最後に並べる
+        main = [main_by_id[session_id]] if session_id in main_by_id else []
+        paths = (*nested_by_id.get(session_id, []), *main)
+        sessions.append(SessionLog(root=root, dir_name=project_dir.name, session_id=session_id, paths=paths))
+    return sessions
 
 
 def _project_dirs(root: Path) -> list[Path]:
@@ -204,36 +209,42 @@ def _project_keys(projects: Iterable[tuple[Path, str]]) -> dict[tuple[Path, str]
     }
 
 
-def project_key_for_session(session: SessionLog, roots: list[Path]) -> ProjectKey:
-    """セッションが属するプロジェクトの ProjectKey を返す。
+def _scan_project(
+    root: Path, project_dir: Path, period_ranges: PeriodRanges, warnings: list[str]
+) -> dict[str, dict[str, Usage]]:
+    """1つのプロジェクトを走査し、period_key -> model -> Usage を返す。"""
+    project_totals: dict[str, dict[str, Usage]] = {}
+    for session in _sessions_in_project(root, project_dir):
+        for model, local_ts, usage in _scan_session_calls(session, warnings):
+            for period_key in period_ranges.periods_for(local_ts.date()):
+                period_bucket = project_totals.setdefault(period_key, {})
+                period_bucket[model] = add_usage(period_bucket.get(model, zero_usage()), usage)
+    return project_totals
 
-    名前の衝突は、指定したログルートのうちセッションを1つ以上持つプロジェクト同士で判定する。
+
+def project_key_for_session(session: SessionLog, roots: list[Path], period_ranges: PeriodRanges) -> ProjectKey:
+    """セッションが属するプロジェクトの ProjectKey を、期間別集計(`scan_all`)と同じ基準で返す。
+
+    名前の衝突は、期間内に使用量を持つ同名のプロジェクトが他のログルートにあるかどうかで判定する。
+    全体を走査せずに済むよう、同名のプロジェクトだけを走査する。
     """
-    projects = [
-        (root, project_dir.name)
+    others = [
+        (root, session.dir_name)
         for root in roots
-        for project_dir in _project_dirs(root)
-        if _sessions_in_project(root, project_dir)
+        if root != session.root
+        and (root / session.dir_name).is_dir()
+        and _scan_project(root, root / session.dir_name, period_ranges, [])
     ]
-    return _project_keys(projects)[(session.root, session.dir_name)]
+    return _project_keys([(session.root, session.dir_name), *others])[(session.root, session.dir_name)]
 
 
 def _scan_root(root: Path, period_ranges: PeriodRanges, warnings: list[str]) -> dict[str, dict[str, dict[str, Usage]]]:
     """1つのログルートを走査し、dir_name -> period_key -> model -> Usage を返す。"""
     by_dir_name: dict[str, dict[str, dict[str, Usage]]] = {}
-
     for project_dir in _project_dirs(root):
-        project_totals: dict[str, dict[str, Usage]] = {}
-
-        for session in _sessions_in_project(root, project_dir):
-            for model, local_ts, usage in _scan_session_calls(session, warnings):
-                for period_key in period_ranges.periods_for(local_ts.date()):
-                    period_bucket = project_totals.setdefault(period_key, {})
-                    period_bucket[model] = add_usage(period_bucket.get(model, zero_usage()), usage)
-
+        project_totals = _scan_project(root, project_dir, period_ranges, warnings)
         if project_totals:
             by_dir_name[project_dir.name] = project_totals
-
     return by_dir_name
 
 

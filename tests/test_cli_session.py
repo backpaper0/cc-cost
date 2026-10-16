@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import os
 from pathlib import Path
 
@@ -104,13 +105,57 @@ def test_session_in_extra_root_with_fallback_name(env, capsys):
     assert capsys.readouterr().out.splitlines()[0] == "■ /home/dev/other"
 
 
+def _now_utc() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
 def test_fallback_name_gets_root_suffix_on_collision(env, capsys):
     default_root, extra_root, config_path = env
     _write_standard_session(extra_root, project="-home-dev-other")
-    write_session(default_root, "-home-dev-other", SID_OTHER, main=[])
+    write_session(default_root, "-home-dev-other", SID_OTHER, main=[assistant_entry("req_x", _now_utc())])
+    write_session(extra_root, "-home-dev-other", SID_OTHER.replace("aaaa", "cccc"), main=[assistant_entry("req_y", _now_utc())])
 
     assert _run(config_path, "--session", SID) == 0
-    assert capsys.readouterr().out.splitlines()[0] == f"■ /home/dev/other [{extra_root}]"
+    session_name = capsys.readouterr().out.splitlines()[0]
+
+    # 期間別表示と同じ名前になる
+    assert _run(config_path) == 0
+    period_names = [line for line in capsys.readouterr().out.splitlines() if line.startswith("■ ")]
+    assert session_name == f"■ /home/dev/other [{extra_root}]"
+    assert session_name in period_names
+
+
+def test_no_suffix_when_other_root_has_no_usage_in_periods(env, capsys):
+    # 期間別表示で衝突しない(他方のルートに期間内の使用量がない)なら、--session でも suffix を付けない
+    default_root, extra_root, config_path = env
+    _write_standard_session(extra_root, project="-home-dev-other")
+    write_session(
+        default_root, "-home-dev-other", SID_OTHER, main=[assistant_entry("req_old", "2020-01-01T00:00:00.000Z")]
+    )
+
+    assert _run(config_path, "--session", SID) == 0
+    assert capsys.readouterr().out.splitlines()[0] == "■ /home/dev/other"
+
+
+def test_default_output_without_session(env, capsys):
+    default_root, _extra, config_path = env
+    write_session(
+        default_root,
+        "-home-dev-grouped",
+        SID,
+        main=[assistant_entry("req_1", _now_utc(), output_tokens=1_000_000)],
+        subagents={"agent-x": [assistant_entry("req_1", _now_utc(), output_tokens=4, is_sidechain=True)]},
+    )
+
+    assert _run(config_path) == 0
+    assert capsys.readouterr().out == (
+        "■ grouped\n"
+        "    本日    : $10.00 (¥1,500)\n"
+        "    今月    : $10.00 (¥1,500)\n"
+        "    先月    : $0.00 (¥0)\n"
+        "    先々月   : $0.00 (¥0)\n"
+        "\n"
+    )
 
 
 def test_no_matching_session(env, capsys):

@@ -10,10 +10,10 @@ from importlib import metadata
 from pathlib import Path
 
 from .config import DEFAULT_CONFIG_PATH, Config, load_config
-from .grouping import group_projects, readable_dir_name, resolve_group_name
+from .grouping import group_projects, resolve_group_name
 from .periods import PeriodRanges
-from .render import render, render_session
-from .scanner import SessionLog, find_sessions, project_key_for_session, scan_all, scan_session
+from .render import render, render_session, render_session_candidates
+from .scanner import find_sessions, project_key_for_session, scan_all, scan_session
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,19 +46,6 @@ def _resolve_use_color(no_color_flag: bool) -> bool:
     return sys.stdout.isatty()
 
 
-def _print_candidates(prefix: str, sessions: list[SessionLog]) -> None:
-    print(f"セッションID '{prefix}' に一致するセッションが複数あります:", file=sys.stderr)
-    show_root = len({s.root for s in sessions}) > 1
-    for session in sessions:
-        line = (
-            f"    {session.session_id}  {readable_dir_name(session.dir_name)}  "
-            f"{session.last_modified().strftime('%Y-%m-%d %H:%M')}"
-        )
-        if show_root:
-            line += f"  [{session.root}]"
-        print(line, file=sys.stderr)
-
-
 def _run_session(prefix: str, roots: list[Path], config: Config, verbose: bool, use_color: bool) -> int:
     sessions = find_sessions(roots, prefix)
     if not sessions:
@@ -66,7 +53,7 @@ def _run_session(prefix: str, roots: list[Path], config: Config, verbose: bool, 
         return 1
     if len(sessions) > 1:
         # 同じ全桁IDが複数のログルートにある場合も合算せず、候補として示す(docs/adr/0004)
-        _print_candidates(prefix, sessions)
+        render_session_candidates(prefix, sessions)
         return 1
 
     session = sessions[0]
@@ -75,7 +62,8 @@ def _run_session(prefix: str, roots: list[Path], config: Config, verbose: bool, 
     for warning in warnings:
         print(f"警告: {warning}", file=sys.stderr)
 
-    _index, group_name = resolve_group_name(project_key_for_session(session, roots), config)
+    period_ranges = PeriodRanges.for_now(dt.datetime.now().astimezone())
+    _index, group_name = resolve_group_name(project_key_for_session(session, roots, period_ranges), config)
     render_session(group_name, session.session_id, session_usage, config, verbose=verbose, use_color=use_color)
     return 0
 

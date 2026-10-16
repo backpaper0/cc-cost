@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import sys
 from collections.abc import Iterable
 
 from .config import Config
+from .grouping import readable_dir_name
 from .periods import PERIOD_KEYS, PERIOD_LABELS
 from .pricing import PeriodCost, compute_period_cost, unknown_models_in
-from .scanner import SessionUsage
+from .scanner import SessionLog, SessionUsage
 from .usage import Usage
 
 RESET = "\033[0m"
@@ -117,3 +119,20 @@ def render_session(
 
     _print_unknown_model_warnings(unknown_models, use_color)
     print()
+
+
+def render_session_candidates(prefix: str, sessions: list[SessionLog]) -> None:
+    """前方一致で複数のセッションに一致したときの候補一覧を stderr に出す。
+
+    候補が複数のログルートにまたがるときは、区別できるようにログルートのパスを付ける。
+    """
+    print(f"セッションID '{prefix}' に一致するセッションが複数あります:", file=sys.stderr)
+    show_root = len({s.root for s in sessions}) > 1
+    for session in sessions:
+        line = (
+            f"    {session.session_id}  {readable_dir_name(session.dir_name)}  "
+            f"{_fmt_datetime(session.last_modified())}"
+        )
+        if show_root:
+            line += f"  [{session.root}]"
+        print(line, file=sys.stderr)
